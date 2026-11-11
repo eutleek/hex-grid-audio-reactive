@@ -44,7 +44,7 @@
    <Steam>\steamapps\common\wallpaper_engine\projects\myprojects\
    ```
 
-   本机示例：`I:\Steam\steamapps\common\wallpaper_engine\projects\myprojects\Hex Grid Audio Reactive`
+   Windows 常见位置是 `C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\projects\myprojects\`。
 
 3. 重启 Wallpaper Engine，在「已安装」列表里找到它，双击即可应用。
 
