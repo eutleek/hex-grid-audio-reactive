@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: #000;
+  }
+  canvas#wp {
+    display: block;
+    width: 100vw; height: 100vh;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="wp"></canvas>
+<script>
+(function () {
+  "use strict";
+
+  // ===== 设备检测与分辨率适配 =====
+  var IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                  (typeof navigator.maxTouchPoints === "number" && navigator.maxTouchPoints > 1) ||
+                  (typeof navigator.pointerEnabled === "boolean" && navigator.pointerEnabled);
+  // 移动端限制渲染分辨率与格子密度，保证流畅
+  var DPR = Math.min(window.devicePixelRatio || 1, IS_MOBILE ? 1.5 : 2);
+  var GRID_SHORT = IS_MOBILE ? 14 : 22;   // 短边格子数（移动端更少）
+  var GLOW_THRESHOLD = IS_MOBILE ? 0.30 : 0.15; // 移动端减少发光开销
+
+  // ===== Canvas 初始化 =====
+  var canvas = document.getElementById("wp");
+  var ctx = canvas.getContext("2d");
+  var W = 0, H = 0;   // CSS 像素逻辑尺寸
+
+  // 动态网格：铺满全屏，格子保持正方形，长边自动增加格子数
+  var cols = 20, rows = 20, cellSize = 0;
+  var cells = [];
+  var maxDist = 1;
+
+  function rebuildCells() {
+    var halfCol = (cols - 1) / 2;
+    var halfRow = (rows - 1) / 2;
+    maxDist = Math.sqrt(halfCol * halfCol + halfRow * halfRow) || 1;
+    cells = new Array(cols * rows);
+    for (var i = 0; i < cells.length; i++) {
+      var col = i % cols;
+      var row = Math.floor(i / cols);
+      var dx = col - halfCol;
+      var dy = row - halfRow;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      cells[i] = {
+        col: col, row: row,
+        normDist: dist / maxDist,
+        angle: Math.atan2(dy, dx),
+        seed: Math.random() * Math.PI * 2,
+        baseHue: (Math.atan2(dy, dx) * 57.3 + (dist / maxDist) * 80) % 360
+      };
+    }
+  }
+
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // 短边保持固定格子数，长边（长度方向）按比例自动增加
+    cellSize = Math.min(W, H) / GRID_SHORT;
+    cols = Math.max(1, Math.ceil(W / cellSize));
+    rows = Math.max(1, Math.ceil(H / cellSize));
+    rebuildCells();
+  }
+  resize();
+  window.addEventListener("resize", resize);
+  window.addEventListener("orientationchange", function () { setTimeout(resize, 300); });
+
+  // ===== 用户可调属性（来自 WE 调节栏） =====
+  var props = {
+    sensitivity: 1.0,
+    animPreset: "concentric",
+    colorPreset: "neon",
+    tapEnabled: false,
+    tapRipple: false,
+    tapPulse: false
+  };
+
+  function clampNum(v, lo, hi) {
+    v = Number(v);
+    if (isNaN(v)) return lo;
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function boolVal(v) {
+    return v === true || v === "true" || v === 1 || v === "1";
+  }
+
+  window.wallpaperPropertyListener = {
+    applyUserProperties: function (properties) {
+      if (!properties) return;
+      if (properties.sensitivity && properties.sensitivity.value !== undefined) {
+        // 滑块 1-10 整数档，每档 0.5（1→0.5x, 2→1.0x, ..., 10→5.0x）
+        props.sensitivity = clampNum(properties.sensitivity.value, 1, 10) * 0.5;
+      }
+      if (properties.animPreset && properties.animPreset.value !== undefined) {
+        props.animPreset = String(properties.animPreset.value);
+      }
+      if (properties.colorPreset && properties.colorPreset.value !== undefined) {
+        props.colorPreset = String(properties.colorPreset.value);
+      }
+      if (properties.tapEnabled && properties.tapEnabled.value !== undefined) {
+        props.tapEnabled = boolVal(properties.tapEnabled.value);
+      }
+      if (properties.tapRipple && properties.tapRipple.value !== undefined) {
+        props.tapRipple = boolVal(properties.tapRipple.value);
+      }
+      if (properties.tapPulse && properties.tapPulse.value !== undefined) {
+        props.tapPulse = boolVal(properties.tapPulse.value);
+      }
+    },
+    setPaused: function () {}
+  };
+
+  // ===== 音频状态 =====
+  var audioRaw = new Array(128);
+  var audioSmoothed = new Array(128);
+  for (var a = 0; a < 128; a++) { audioRaw[a] = 0; audioSmoothed[a] = 0; }
+
+  var ATTACK = 0.8;        // 攻击极快：鼓点立刻跳
+  var RELEASE = 0.05;      // 释放略慢：律动保持
+  var SLOW_RELEASE = 0.015;
+  var NOISE_GATE = 0.0005; // 极低门限
+  var AUDIO_TIMEOUT = 2000;
+
+  var bass = 0, mid = 0, treble = 0;
+  var bassSlow = 0;
+  var prevBass = 0;
+  var hasRealAudio = false;
+  var lastAudioTime = 0;
+  var loudnessSmooth = 0;
+  var listenerExists = typeof window.wallpaperRegisterAudioListener === "function";
+
+  function audioCallback(audioArray) {
+    hasRealAudio = true;
+    lastAudioTime = performance.now();
+    if (audioArray && audioArray.length) {
+      for (var i = 0; i < 128; i++) {
+        audioRaw[i] = audioArray[i] || 0;
+      }
+    }
+  }
+
+  function registerAudio() {
+    if (typeof window.wallpaperRegisterAudioListener === "function") {
+      window.wallpaperRegisterAudioListener(audioCallback);
+      listenerExists = true;
+    }
+  }
+  registerAudio();
+  setTimeout(registerAudio, 500);
+  setTimeout(registerAudio, 1500);
+
+  // ===== 模拟音频（仅浏览器预览） =====
+  var simTime = 0, beatPhase = 0;
+  function simulateAudio(dt) {
+    if (listenerExists) return;
+    simTime += dt;
+    beatPhase += dt * 2.2;
+    var beat = Math.pow(Math.max(0, Math.sin(beatPhase)), 10);
+    var beat2 = Math.pow(Math.max(0, Math.sin(beatPhase + Math.PI)), 6);
+    for (var i = 0; i < 128; i++) {
+      if (i < 10) audioRaw[i] = beat * 0.9 + beat2 * 0.35 + Math.random() * 0.04;
+      else if (i < 20) audioRaw[i] = beat * 0.55 + Math.random() * 0.06;
+      else if (i < 48) audioRaw[i] = 0.28 + Math.sin(simTime * 1.5 + i * 0.15) * 0.18 + Math.random() * 0.07;
+      else if (i < 80) audioRaw[i] = 0.18 + Math.sin(simTime * 3.5 + i * 0.12) * 0.12 + Math.random() * 0.07;
+      else audioRaw[i] = 0.1 + Math.random() * 0.1 + beat * 0.12;
+    }
+  }
+
+  // ===== 波纹环 =====
+  var ripples = [];
+  var RIPPLE_LIFE = 1.5;
+  var ripplesPx = 0;
+  function spawnRipple(x, y, strength) {
+    if (ripples.length > 6) return;
+    ripples.push({ age: 0, strength: strength, cx: x, cy: y });
+  }
+  function updateRipples(dt) {
+    ripplesPx = Math.min(W, H) * 0.95;
+    for (var i = ripples.length - 1; i >= 0; i--) {
+      ripples[i].age += dt;
+      if (ripples[i].age >= RIPPLE_LIFE) {
+        ripples.splice(i, 1);
+      }
+    }
+  }
+
+  // ===== 波纹环绘制 =====
+  function drawRipples(glowHue) {
+    for (var i = 0; i < ripples.length; i++) {
+      var r = ripples[i];
+      var p = r.age / RIPPLE_LIFE;
+      var size = p * ripplesPx;
+      var alpha = (1 - p) * 0.75 * r.strength;
+      var hue = (glowHue + p * 80) % 360;
+      ctx.beginPath();
+      ctx.arc(r.cx, r.cy, size, 0, Math.PI * 2);
+      ctx.strokeStyle = "hsla(" + (hue | 0) + ",100%,65%," + alpha.toFixed(3) + ")";
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+  }
+
+  // ===== 颜色预设 =====
+  function getGlowHue(globalHue, pulse) {
+    switch (props.colorPreset) {
+      case "cyber":   return (188 + pulse * 40) % 360;      // 青蓝主色，重音偏橙
+      case "aurora":  return (170 + globalHue * 0.1) % 360; // 绿蓝极光
+      case "lava":    return (18 + pulse * 26) % 360;       // 炽焰橙红
+      case "sakura":  return 298;                            // 樱花粉紫
+      case "synth":   return (300 + pulse * 28) % 360;       // 蒸汽波紫粉
+      case "mint":    return 172;                            // 薄荷冰蓝
+      case "sunset":  return (20 + pulse * 20) % 360;        // 日落橙红
+      case "emerald": return 152;                            // 翡翠绿
+      case "mono":    return 205;                            // 白金
+      default:        return (globalHue + 180) % 360;        // 霓虹互补色
+    }
+  }
+
+  function getCellColor(d, globalHue, pulse, waveNorm, sparkle, time) {
+    var hue, sat, light;
+    switch (props.colorPreset) {
+      case "cyber":
+        // 赛博青橙：青蓝基底，脉冲与高音向橙偏移，形成冷暖对比
+        hue = (188 + Math.sin(time * 0.6 + d.baseHue * 0.05) * 12 + pulse * 42) % 360;
+        sat = 82 + pulse * 16;
+        light = 30 + waveNorm * 14 + pulse * 36 + sparkle * 16;
+        break;
+      case "aurora":
+        // 深海极光：绿→青→蓝→紫 慢速渐变
+        hue = (140 + (d.baseHue / 360) * 120 + globalHue * 0.1) % 360;
+        sat = 86 + sparkle * 10;
+        light = 28 + waveNorm * 12 + pulse * 30 + sparkle * 22;
+        break;
+      case "lava":
+        // 熔岩炽焰：红→橙→黄，重音更亮更黄
+        hue = (4 + (d.baseHue / 360) * 46 + pulse * 24) % 360;
+        sat = 92 + pulse * 6;
+        light = 34 + waveNorm * 20 + pulse * 40 + sparkle * 14;
+        break;
+      case "sakura":
+        // 樱花幻紫：粉紫低饱和，高级柔和
+        hue = (286 + (d.baseHue / 360) * 42 + sparkle * 16) % 360;
+        sat = 52 + pulse * 26;
+        light = 34 + waveNorm * 16 + pulse * 24 + sparkle * 18;
+        break;
+      case "synth":
+        // 蒸汽波：紫粉主色 + 青色点缀，80s 复古霓虹
+        hue = (292 + (d.baseHue / 360) * 42 + pulse * 30) % 360;
+        sat = 92 + pulse * 6;
+        light = 30 + waveNorm * 16 + pulse * 34 + sparkle * 18;
+        break;
+      case "mint":
+        // 薄荷冰蓝：青绿冰蓝冷色调，清爽通透
+        hue = (168 + (d.baseHue / 360) * 36 + sparkle * 14) % 360;
+        sat = 62 + pulse * 20;
+        light = 36 + waveNorm * 14 + pulse * 22 + sparkle * 18;
+        break;
+      case "sunset":
+        // 日落黄昏：中心橙红、外围紫粉的渐变
+        hue = (16 + (d.baseHue / 360) * 46 + pulse * 16 + d.normDist * 55) % 360;
+        sat = 86 + pulse * 10;
+        light = 32 + waveNorm * 18 + pulse * 34 + sparkle * 16;
+        break;
+      case "emerald":
+        // 翡翠极夜：深翠绿 + 墨色暗场，高级夜感
+        hue = (150 + (d.baseHue / 360) * 30 + pulse * 20) % 360;
+        sat = 66 + pulse * 22;
+        light = 26 + waveNorm * 12 + pulse * 28 + sparkle * 16;
+        break;
+      case "mono":
+        // 白金：黑白银单色，极简高级
+        hue = 205;
+        sat = 8 + pulse * 14;
+        light = 30 + waveNorm * 24 + pulse * 40 + sparkle * 16;
+        break;
+      default:
+        // 幻彩霓虹：全光谱流动（默认）
+        hue = (globalHue + d.baseHue) % 360;
+        sat = 55 + pulse * 45 + sparkle * 30;
+        light = 22 + waveNorm * 20 + pulse * 42 + sparkle * 20;
+    }
+    return { hue: hue, sat: sat > 100 ? 100 : sat, light: light > 88 ? 88 : light };
+  }
+
+  var globalHue = 0;
+  var time = 0;
+  var lastFrame = performance.now();
+  var shakeAmount = 0;
+  var onsetCooldown = 0;
+  var tapPulse = 0;
+
+  // ===== 点击交互（由 WE 调节栏开关控制，默认全关） =====
+  canvas.addEventListener("pointerdown", function (e) {
+    if (!props.tapEnabled) return;
+    if (props.tapRipple) {
+      spawnRipple(e.clientX, e.clientY, 1.0);
+    }
+    if (props.tapPulse) {
+      tapPulse = 1.2;
+    }
+  });
+
+  function animate(now) {
+    var dt = Math.min((now - lastFrame) / 1000, 0.05);
+    lastFrame = now;
+    time += dt;
+    onsetCooldown = Math.max(0, onsetCooldown - dt);
+
+    // 音频来源
+    var audioActive = false;
+    if (listenerExists) {
+      audioActive = hasRealAudio && (now - lastAudioTime < AUDIO_TIMEOUT);
+      if (!audioActive) {
+        for (var i = 0; i < 128; i++) audioRaw[i] = 0;
+      }
+    } else {
+      simulateAudio(dt);
+      audioActive = true;
+    }
+
+    // 平滑 + 门限
+    for (var i = 0; i < 128; i++) {
+      var raw = audioRaw[i];
+      var sm = audioSmoothed[i];
+      if (raw > sm) audioSmoothed[i] = sm + (raw - sm) * ATTACK;
+      else audioSmoothed[i] = sm + (raw - sm) * RELEASE;
+      if (audioSmoothed[i] < NOISE_GATE) audioSmoothed[i] = 0;
+    }
+
+    // 合并左右声道（取最大）
+    var merged = new Array(64);
+    for (var ch = 0; ch < 64; ch++) {
+      var L = audioSmoothed[ch], R = audioSmoothed[ch + 64];
+      merged[ch] = L > R ? L : R;
+    }
+
+    // 分频段
+    bass = 0;
+    for (var b = 0; b < 12; b++) bass += merged[b];
+    bass /= 12;
+    mid = 0;
+    for (var m = 12; m < 28; m++) mid += merged[m];
+    mid /= 16;
+    treble = 0;
+    for (var t = 28; t < 64; t++) treble += merged[t];
+    treble /= 36;
+
+    // 慢速 bass
+    if (bass > bassSlow) bassSlow += (bass - bassSlow) * 0.12;
+    else bassSlow += (bass - bassSlow) * SLOW_RELEASE;
+
+    // ===== 自动增益：声音小自动放大，声音大自动回缩 =====
+    var loudness = bass * 0.5 + mid * 0.3 + treble * 0.2;
+    loudnessSmooth += (loudness - loudnessSmooth) * 0.02;
+    var autoGain = Math.max(1, Math.min(8, 0.3 / (loudnessSmooth + 0.04)));
+    // 灵敏度调节（WE 滑块）直接作用于响应幅度
+    var sens = props.sensitivity;
+    var eBass = Math.min(1, bass * autoGain * 2.2 * sens);
+    var eMid  = Math.min(1, mid  * autoGain * 2.0 * sens);
+    var eTreble = Math.min(1, treble * autoGain * 2.0 * sens);
+
+    // Onset 检测（用增强后的 bass）
+    var bassDelta = eBass - prevBass;
+    if (audioActive && onsetCooldown <= 0 && bassDelta > 0.02 && eBass > 0.04) {
+      spawnRipple(W / 2, H / 2, Math.min(1, eBass * 1.6));
+      shakeAmount = Math.min(10, bassDelta * 70);
+      onsetCooldown = 0.1;
+    }
+    prevBass = eBass;
+    shakeAmount *= 0.88;
+    tapPulse *= 0.90;
+
+    // 色相流动
+    var hueSpeed = audioActive ? (12 + eMid * 60 + eBass * 45) : 2;
+    globalHue = (globalHue + dt * hueSpeed) % 360;
+
+    updateRipples(dt);
+
+    // ===== 开始绘制 =====
+    ctx.clearRect(0, 0, W, H);
+    // 背景
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+
+    // 背景光晕（径向渐变）
+    var glowSize = (0.5 + eBass * 0.4 + bassSlow * 0.3 + tapPulse * 0.2) * Math.min(W, H);
+    var glowHue = getGlowHue(globalHue, eBass);
+    var grad = ctx.createRadialGradient(
+      W / 2, H / 2, 0,
+      W / 2, H / 2, glowSize
+    );
+    grad.addColorStop(0, "hsla(" + (glowHue | 0) + ",85%,45%," + (0.12 + eBass * 0.35 + tapPulse * 0.1) + ")");
+    grad.addColorStop(0.45, "hsla(" + ((glowHue + 40) % 360 | 0) + ",70%,30%," + (0.05 + eMid * 0.12) + ")");
+    grad.addColorStop(1, "hsla(" + (glowHue | 0) + ",70%,20%,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // 震屏
+    ctx.save();
+    if (shakeAmount > 0.1) {
+      ctx.translate(
+        (Math.random() - 0.5) * shakeAmount,
+        (Math.random() - 0.5) * shakeAmount
+      );
+    }
+
+    // 波浪参数
+    var waveSpeed = audioActive ? (1.0 + eMid * 3.5) : 0.15;
+    var waveFreq = 0.45;
+    var waveAmp = audioActive ? 0.3 : 0.08;
+    var pulseGlobal = Math.min(1.8, eBass * 2.2 + tapPulse * 1.2);
+
+    // ===== 绘制格子（按动画预设切换） =====
+    for (var i = 0; i < cells.length; i++) {
+      var d = cells[i];
+      var wave, sparkle, ringWave, centerFactor;
+      // 网格行列数（供多个动画分支共用，避免变量未定义）
+      var colSpan = (cols - 1) || 1;
+      var rowSpan = (rows - 1) || 1;
+
+      switch (props.animPreset) {
+        case "matrix":
+          // 矩阵雨：每列独立下落的光带，像雨滴扫过（赛博感）
+          var fall = (time * (0.7 + d.seed * 0.3) + d.col * 0.31) % 1;
+          var rainBand = Math.max(0, 1 - Math.abs(fall - d.row / rowSpan) * 6);
+          wave = Math.sin(time * waveSpeed * 1.2 - d.row * 0.8) * 0.4 + rainBand * 0.6;
+          centerFactor = 1;
+          sparkle = eTreble * 0.6 * (Math.sin(time * 14 + d.seed) * 0.5 + 0.5);
+          ringWave = rainBand * eMid * 0.9;
+          break;
+        case "twinkle":
+          // 星光闪烁：高频随机闪烁主导
+          wave = Math.sin(time * waveSpeed * 0.5 + d.seed);
+          centerFactor = 1 - d.normDist * 0.25;
+          sparkle = eTreble * 1.2 * (Math.sin(time * 18 + d.seed * 3) * 0.5 + 0.5) + eBass * 0.3;
+          ringWave = 0;
+          break;
+        case "cross":
+          // 十字脉冲：从中心向上下左右扩散的十字光波
+          var halfColC = (cols - 1) / 2;
+          var halfRowC = (rows - 1) / 2;
+          var crossDx = Math.abs(d.col - halfColC) / (halfColC || 1);
+          var crossDy = Math.abs(d.row - halfRowC) / (halfRowC || 1);
+          var crossDist = Math.min(crossDx, crossDy);
+          var crossPulse = (time * 2.5 - crossDist * 2) % 2;
+          wave = Math.sin(time * waveSpeed * 0.8 - crossDist * Math.PI * 1.5);
+          centerFactor = 1 - crossDist * 0.5;
+          sparkle = eTreble * 0.4 * (Math.sin(time * 12 + d.seed) * 0.5 + 0.5);
+          ringWave = Math.max(0, 1 - Math.abs(crossPulse - 1) * 2.5) * eMid;
+          break;
+        case "breathe":
+          // 呼吸节拍：全屏随重拍同步呼吸缩放
+          wave = Math.sin(time * waveSpeed * 0.6);
+          centerFactor = 1;
+          sparkle = eTreble * 0.3 * (Math.sin(time * 12 + d.seed) * 0.5 + 0.5);
+          ringWave = eMid * 0.4;
+          break;
+        case "diagonal":
+          // 对角流光：斜向光带反复扫过
+          var diagPos = (d.col / colSpan + d.row / rowSpan) / 2;
+          var diagWave = (time * 1.3 + diagPos * 2) % 2;
+          wave = Math.sin(time * waveSpeed - diagPos * Math.PI * 3);
+          centerFactor = 1;
+          sparkle = eTreble * 0.4 * (Math.sin(time * 12 + d.seed) * 0.5 + 0.5);
+          ringWave = Math.max(0, 1 - Math.abs(diagWave - 1) * 3) * eMid;
+          break;
+        case "bars":
+          // 竖频谱条：每列映射到不同频段，列高度随频率起伏
+          var freqIdx = Math.floor((d.col / (cols || 1)) * 24);
+          var freqVal = merged[freqIdx % 24] || 0;
+          wave = Math.sin(time * waveSpeed * 0.8);
+          centerFactor = 1;
+          sparkle = eTreble * 0.2;
+          ringWave = freqVal * 1.5;
+          break;
+        case "radial":
+          // 放射风暴：从中心向外放射的旋转辐条
+          var spoke = Math.sin(d.angle * 8 - time * 2.5);
+          wave = Math.sin(time * waveSpeed - d.normDist * maxDist * waveFreq * 1.8);
+          centerFactor = 1 - d.normDist * 0.4;
+          sparkle = eTreble * 0.5 * Math.max(0, spoke) * (Math.sin(time * 12 + d.seed) * 0.5 + 0.5);
+          ringWave = Math.max(0, spoke) * eMid * 0.7;
+          break;
+        case "chase":
+          // 追逐波：逐行向前的光脉冲
+          var chasePos = d.col / colSpan;
+          var chaseP = (time * 2 + d.row * 0.25) % 1;
+          wave = Math.sin(time * waveSpeed - chasePos * Math.PI * 4);
+          centerFactor = 1;
+          sparkle = eTreble * 0.5 * Math.max(0, Math.sin(time * 8 + d.col * 0.5));
+          ringWave = Math.max(0, 1 - Math.abs(chaseP - chasePos) * 4) * eMid;
+          break;
+        case "explode":
+          // 脉冲爆发：从中心向外剧烈爆发
+          wave = Math.sin(time * waveSpeed * 1.2 - d.normDist * maxDist * waveFreq * 2.2);
+          centerFactor = 1.15 - d.normDist * 0.6;
+          sparkle = eTreble * 0.4 * (Math.sin(time * 12 + d.seed) * 0.5 + 0.5);
+          var burst = (time * 3 + d.normDist * 3) % 2;
+          ringWave = Math.max(0, 1 - Math.abs(burst - d.normDist * 2) * 3) * eMid * 0.8;
+          break;
+        default:
+          // 同心波：从中心向外扩散的圆环波（默认）
+          wave = Math.sin(time * waveSpeed - d.normDist * maxDist * waveFreq);
+          centerFactor = 1 - d.normDist * 0.45;
+          sparkle = eTreble * (0.3 + d.normDist * 0.6) * (Math.sin(time * 12 + d.seed) * 0.5 + 0.5);
+          var ringDistVal = (time * 2.5 + d.angle * 0.6) % 2;
+          ringWave = Math.max(0, 1 - Math.abs(ringDistVal - d.normDist * 1.6) * 4) * eMid * 0.9;
+      }
+
+      var waveNorm = (wave + 1) * 0.5;
+      var pulse = pulseGlobal * centerFactor;
+
+      // 合成（大幅）
+      var scale = 0.16 + waveNorm * waveAmp + pulse * 0.95 + sparkle * 0.3 + ringWave * 0.4;
+      if (scale > 1.9) scale = 1.9;
+      var opacity = 0.05 + waveNorm * (audioActive ? 0.3 : 0.06) + pulse * 0.7 + sparkle * 0.2 + ringWave * 0.3;
+      if (opacity > 1) opacity = 1;
+
+      // 颜色（按颜色预设）
+      var col = getCellColor(d, globalHue, pulse, waveNorm, sparkle, time);
+      var cellHue = col.hue;
+      var saturation = col.sat;
+      var lightness = col.light;
+
+      var cellPx = cellSize * scale * 0.88;
+      var cx = d.col * cellSize + cellSize / 2;
+      var cy = d.row * cellSize + cellSize / 2;
+      var radius = cellPx * (pulse > 0.3 ? 0.5 : 0.1);
+
+      // 发光：双层填充模拟（性能远高于 shadowBlur；移动端减少发光）
+      var glowIntensity = pulse * 0.5 + sparkle * 0.25 + ringWave * 0.3;
+      if (glowIntensity > GLOW_THRESHOLD) {
+        var glowPx = cellPx * (1.5 + glowIntensity * 0.6);
+        ctx.fillStyle = "hsla(" + (cellHue | 0) + ",100%,60%," + (glowIntensity * 0.3).toFixed(3) + ")";
+        roundRect(cx - glowPx / 2, cy - glowPx / 2, glowPx, glowPx, glowPx * 0.3);
+        ctx.fill();
+      }
+
+      // 主矩形
+      ctx.fillStyle = "hsla(" + (cellHue | 0) + "," + (saturation | 0) + "%," + (lightness | 0) + "%," + opacity.toFixed(3) + ")";
+      roundRect(cx - cellPx / 2, cy - cellPx / 2, cellPx, cellPx, radius);
+      ctx.fill();
+    }
+
+    // 波纹环
+    drawRipples(glowHue);
+
+    ctx.restore();
+
+    requestAnimationFrame(animate);
+  }
+
+  // ===== 圆角矩形 =====
+  function roundRect(x, y, w, h, r) {
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+  }
+
+  requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>

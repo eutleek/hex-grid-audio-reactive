@@ -1,0 +1,15 @@
+# 系统与编辑器生成文件
+Thumbs.db
+.DS_Store
+desktop.ini
+*~
+*.tmp
+*.bak
+.vscode/
+.idea/
+
+# Wallpaper Engine 运行时产物
+*.log
+*.pkg
+
+# 说明：index.html / project.json / preview.gif 都是壁纸运行所需资源，必须纳入版本管理

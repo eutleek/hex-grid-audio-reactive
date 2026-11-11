@@ -1,0 +1,164 @@
+{
+	"contentrating" : "Everyone",
+	"description" : "六边形网格音频反应壁纸，支持多种动画预设与颜色方案，适配 Wallpaper Engine 音频处理",
+	"file" : "index.html",
+	"general" : 
+	{
+		"properties" : 
+		{
+			"animPreset" : 
+			{
+				"index" : 1,
+				"options" : 
+				[
+					{
+						"label" : "同心波 Concentric",
+						"value" : "concentric"
+					},
+					{
+						"label" : "矩阵雨 Matrix",
+						"value" : "matrix"
+					},
+					{
+						"label" : "星光闪烁 Twinkle",
+						"value" : "twinkle"
+					},
+					{
+						"label" : "十字脉冲 Cross",
+						"value" : "cross"
+					},
+					{
+						"label" : "脉冲爆发 Explode",
+						"value" : "explode"
+					},
+					{
+						"label" : "呼吸节拍 Breathe",
+						"value" : "breathe"
+					},
+					{
+						"label" : "对角流光 Diagonal",
+						"value" : "diagonal"
+					},
+					{
+						"label" : "竖频谱条 Bars",
+						"value" : "bars"
+					},
+					{
+						"label" : "放射风暴 Radial",
+						"value" : "radial"
+					},
+					{
+						"label" : "追逐波 Chase",
+						"value" : "chase"
+					}
+				],
+				"order" : 101,
+				"text" : "动画预设 Animation",
+				"type" : "combo",
+				"value" : "concentric"
+			},
+			"colorPreset" : 
+			{
+				"index" : 2,
+				"options" : 
+				[
+					{
+						"label" : "幻彩霓虹 Neon",
+						"value" : "neon"
+					},
+					{
+						"label" : "赛博青橙 Cyber",
+						"value" : "cyber"
+					},
+					{
+						"label" : "深海极光 Aurora",
+						"value" : "aurora"
+					},
+					{
+						"label" : "熔岩炽焰 Lava",
+						"value" : "lava"
+					},
+					{
+						"label" : "樱花幻紫 Sakura",
+						"value" : "sakura"
+					},
+					{
+						"label" : "蒸汽波 Synthwave",
+						"value" : "synth"
+					},
+					{
+						"label" : "薄荷冰蓝 Mint",
+						"value" : "mint"
+					},
+					{
+						"label" : "日落黄昏 Sunset",
+						"value" : "sunset"
+					},
+					{
+						"label" : "翡翠极夜 Emerald",
+						"value" : "emerald"
+					},
+					{
+						"label" : "白金 Mono",
+						"value" : "mono"
+					}
+				],
+				"order" : 102,
+				"text" : "颜色预设 Color",
+				"type" : "combo",
+				"value" : "neon"
+			},
+			"schemecolor" : 
+			{
+				"order" : 0,
+				"text" : "ui_browse_properties_scheme_color",
+				"type" : "color",
+				"value" : "0 0 0"
+			},
+			"sensitivity" : 
+			{
+				"fraction" : false,
+				"index" : 0,
+				"max" : 10,
+				"min" : 1,
+				"order" : 100,
+				"text" : "灵敏度 Sensitivity",
+				"type" : "slider",
+				"value" : 2
+			},
+			"tapEnabled" : 
+			{
+				"index" : 3,
+				"order" : 103,
+				"text" : "点击交互 Tap Interaction",
+				"type" : "bool",
+				"value" : true
+			},
+			"tapPulse" : 
+			{
+				"index" : 5,
+				"order" : 105,
+				"text" : "点击脉冲 Tap Pulse",
+				"type" : "bool",
+				"value" : false
+			},
+			"tapRipple" : 
+			{
+				"index" : 4,
+				"order" : 104,
+				"text" : "点击波纹 Tap Ripple",
+				"type" : "bool",
+				"value" : false
+			}
+		},
+		"supportsaudioprocessing" : true
+	},
+	"preview" : "preview.gif",
+	"ratingsex" : "none",
+	"ratingviolence" : "none",
+	"tags" : [ "Unspecified" ],
+	"title" : "方形网格音乐律动 Hex Grid Audio Reactive",
+	"type" : "Web",
+	"version" : 2,
+	"visibility" : "private"
+}
